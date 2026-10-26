@@ -1,0 +1,62 @@
+# Compila CapyroInstaller.exe (desde Linux, con mingw-w64) con el último
+# Capyro para Windows adentro y lo publica en la release "latest".
+#
+# Corre al hacer push, a mano, y cuando el CI de Capyro avisa que hay un
+# paquete nuevo (repository_dispatch "capyro-windows").
+name: Instalador
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [capyro-windows]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      CAPYRO_REPO: CapyIsInsano/Capyro
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Herramientas (mingw-w64)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Pruebas
+        run: cargo test --release
+
+      - name: Bajar el último Capyro para Windows (va adentro del instalador)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download windows --repo "$CAPYRO_REPO" --pattern capyro-windows-x64.zip --dir payload \
+            || echo "::warning::No hay capyro-windows-x64.zip publicado: el instalador va a bajarlo al instalar"
+          ls -la payload
+
+      - name: Compilar CapyroInstaller.exe
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: |
+          cargo build --release --target x86_64-pc-windows-gnu
+          cp target/x86_64-pc-windows-gnu/release/CapyroInstaller.exe .
+          ls -la CapyroInstaller.exe
+
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(unzip -p payload/capyro-windows-x64.zip version.txt 2>/dev/null | head -1 || true)
+          printf 'Instalador de Capyro para Windows 10 y 11.\n\nTrae adentro Capyro %s.\n' "${VERSION:-(la última versión, la baja al instalar)}" > notes.md
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest CapyroInstaller.exe --target "$GITHUB_SHA" \
+            --title "CapyroInstaller${VERSION:+ · Capyro $VERSION}" --notes-file notes.md

@@ -1,0 +1,42 @@
+[package]
+name = "capyro_installer"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Capyro - Installer: instala Capyro en Windows"
+license = "GPL-3.0-or-later"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "CapyroInstaller"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Elegir carpetas (dónde instalar y dónde va la config)
+rfd = "0.17"
+# El paquete de Capyro (capyro-windows-x64.zip): solo deflate, en Rust puro
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Respuesta de la API de GitHub (instalador "online", sin paquete adentro)
+serde_json = "1"
+
+# En Linux solo se compila para probar la interfaz (modo simulación).
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["wayland", "x11"] }
+
+[target.'cfg(windows)'.dependencies]
+# Documentos, AppData, Escritorio, menú Inicio (aunque estén en OneDrive)
+dirs = "6"
+# "Aplicaciones instaladas" (desinstalar desde Configuración)
+winreg = "0.55"
+# Accesos directos (.lnk) en el menú Inicio y el escritorio
+mslnk = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
