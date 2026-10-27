@@ -23,6 +23,16 @@ pub const ASSET: &str = "capyro-windows-x64.zip";
 /// Clave de "Aplicaciones instaladas" (por usuario: no pide administrador).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Capyro";
+/// Formatos que abre Capyro ("Abrir con…").
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const EXTENSIONS: [&str; 7] = [".mp4", ".mov", ".avi", ".mp3", ".wav", ".ogg", ".aac"];
+/// Tipo de archivo de Capyro en el registro (ProgID).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const PROG_ID: &str = "Capyro.Media";
+/// Dónde se anotan las capacidades (Aplicaciones predeterminadas).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const CAPABILITIES: &str = r"Software\Capyro\Capabilities";
+
 /// Archivo junto a capyro.exe con la ruta de la config (lo lee Capyro).
 pub const CONFIG_POINTER: &str = "capyro-config.txt";
 
@@ -459,7 +469,77 @@ mod system {
         key.set_value("NoModify", &1u32).map_err(|e| e.to_string())?;
         key.set_value("NoRepair", &1u32).map_err(|e| e.to_string())?;
         key.set_value("EstimatedSize", &dir_size_kb(dir)).map_err(|e| e.to_string())?;
+        register_formats(exe).map_err(|e| format!("No pude registrar los formatos para \"Abrir con\": {e}"))?;
         Ok(())
+    }
+
+    /// "Abrir con…": Capyro aparece (y como recomendada) para sus formatos.
+    /// No se adueña de ninguno: el usuario elige si lo quiere por defecto
+    /// (y desde Configuración → Aplicaciones predeterminadas → Capyro).
+    fn register_formats(exe: &Path) -> std::io::Result<()> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let exe_s = exe.to_string_lossy().into_owned();
+        let open_cmd = format!("\"{exe_s}\" \"%1\"");
+        let icon = format!("\"{exe_s}\",0");
+
+        // el tipo "archivo de Capyro" (ProgID) y cómo se abre
+        let (prog, _) = hkcu.create_subkey(format!(r"Software\Classes\{PROG_ID}"))?;
+        prog.set_value("", &"Archivo multimedia (Capyro)")?;
+        prog.set_value("FriendlyTypeName", &"Archivo multimedia")?;
+        hkcu.create_subkey(format!(r"Software\Classes\{PROG_ID}\DefaultIcon"))?.0.set_value("", &icon)?;
+        hkcu.create_subkey(format!(r"Software\Classes\{PROG_ID}\shell\open\command"))?.0.set_value("", &open_cmd)?;
+
+        // la aplicación en sí (lista de "Abrir con")
+        let app = r"Software\Classes\Applications\capyro.exe";
+        let (a, _) = hkcu.create_subkey(app)?;
+        a.set_value("FriendlyAppName", &"Capyro")?;
+        hkcu.create_subkey(format!(r"{app}\DefaultIcon"))?.0.set_value("", &icon)?;
+        hkcu.create_subkey(format!(r"{app}\shell\open\command"))?.0.set_value("", &open_cmd)?;
+        let (types, _) = hkcu.create_subkey(format!(r"{app}\SupportedTypes"))?;
+
+        // capacidades: aparece en Aplicaciones predeterminadas
+        let (cap, _) = hkcu.create_subkey(CAPABILITIES)?;
+        cap.set_value("ApplicationName", &"Capyro")?;
+        cap.set_value("ApplicationDescription", &"Just press play. Reproductor de audio y video.")?;
+        cap.set_value("ApplicationIcon", &icon)?;
+        let (assoc, _) = hkcu.create_subkey(format!(r"{CAPABILITIES}\FileAssociations"))?;
+
+        for ext in EXTENSIONS {
+            types.set_value(ext, &"")?;
+            assoc.set_value(ext, &PROG_ID)?;
+            let (k, _) = hkcu.create_subkey(format!(r"Software\Classes\{ext}\OpenWithProgids"))?;
+            k.set_value(PROG_ID, &"")?;
+        }
+        hkcu.create_subkey(r"Software\RegisteredApplications")?.0.set_value("Capyro", &CAPABILITIES)?;
+        notify_assoc_changed();
+        Ok(())
+    }
+
+    fn unregister_formats() {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        for ext in EXTENSIONS {
+            if let Ok(k) = hkcu.open_subkey_with_flags(format!(r"Software\Classes\{ext}\OpenWithProgids"), KEY_ALL_ACCESS) {
+                let _ = k.delete_value(PROG_ID);
+            }
+        }
+        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{PROG_ID}"));
+        let _ = hkcu.delete_subkey_all(r"Software\Classes\Applications\capyro.exe");
+        let _ = hkcu.delete_subkey_all(r"Software\Capyro");
+        if let Ok(k) = hkcu.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_ALL_ACCESS) {
+            let _ = k.delete_value("Capyro");
+        }
+        notify_assoc_changed();
+    }
+
+    /// Que el Explorador se entere sin reiniciar.
+    fn notify_assoc_changed() {
+        #[link(name = "shell32")]
+        extern "system" {
+            fn SHChangeNotify(event: i32, flags: u32, a: *const std::ffi::c_void, b: *const std::ffi::c_void);
+        }
+        const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+        // SAFETY: llamada sin punteros (SHCNF_IDLIST con NULL).
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, 0, std::ptr::null(), std::ptr::null()) };
     }
 
     /// Lo que se anotó al instalar (para desinstalar).
@@ -473,7 +553,7 @@ mod system {
     pub fn remove_registration() {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let _ = hkcu.delete_subkey_all(UNINSTALL_KEY);
-        let _ = KEY_ALL_ACCESS;
+        unregister_formats();
         for l in [start_menu_lnk(), desktop_lnk()].into_iter().flatten() {
             let _ = std::fs::remove_file(l);
         }
