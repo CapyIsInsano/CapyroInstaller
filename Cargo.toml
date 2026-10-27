@@ -27,6 +27,8 @@ serde_json = "1"
 eframe = { version = "0.37", default-features = false, features = ["wayland", "x11"] }
 
 [target.'cfg(windows)'.dependencies]
+# wgpu (Direct3D 12) además de OpenGL: si uno no anda, se usa el otro
+eframe = { version = "0.37", default-features = false, features = ["wgpu"] }
 # Documentos, AppData, Escritorio, menú Inicio (aunque estén en OneDrive)
 dirs = "6"
 # "Aplicaciones instaladas" (desinstalar desde Configuración)

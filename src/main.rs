@@ -9,6 +9,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod errlog;
 mod install;
 mod sound;
 mod theme;
@@ -27,6 +28,7 @@ fn icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    errlog::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let uninstall = args.iter().any(|a| a == "--uninstall");
     // "--uninstall --quiet": sin ventana (lo usa Windows para desinstalar en silencio)
@@ -48,6 +50,50 @@ fn main() -> eframe::Result {
     }
     let mode = if uninstall { ui::Mode::Uninstall } else { ui::Mode::Install };
 
+    // Windows: primero OpenGL y, si la placa/driver no lo soporta, wgpu
+    // (Direct3D 12). Con --wgpu o --opengl se fuerza uno. Linux: OpenGL.
+    #[cfg(windows)]
+    let renderers: Vec<eframe::Renderer> = if args.iter().any(|a| a == "--wgpu") {
+        vec![eframe::Renderer::Wgpu]
+    } else if args.iter().any(|a| a == "--opengl") {
+        vec![eframe::Renderer::Glow]
+    } else {
+        vec![eframe::Renderer::Glow, eframe::Renderer::Wgpu]
+    };
+    #[cfg(not(windows))]
+    let renderers = vec![eframe::Renderer::Glow];
+    errlog::log(&format!(
+        "CapyroInstaller {} · abriendo la ventana ({renderers:?})",
+        env!("CARGO_PKG_VERSION")
+    ));
+
+    let mut errors = Vec::new();
+    for renderer in renderers {
+        let result = eframe::run_native(
+            "Capyro - Installer",
+            native_options(uninstall, renderer),
+            Box::new(move |cc| Ok(Box::new(ui::InstallerApp::new(cc, mode)))),
+        );
+        match result {
+            Ok(()) => {
+                errlog::log(&format!("cerrado bien ({renderer:?})"));
+                return Ok(());
+            }
+            Err(e) => {
+                let msg = format!("{renderer:?}: {e}");
+                errlog::log(&format!("no se pudo abrir la ventana con {msg}"));
+                errors.push(msg);
+            }
+        }
+    }
+    errlog::fatal(&format!(
+        "No se pudo abrir la ventana del instalador.\n\n{}\n\nProbá actualizar los drivers de video.",
+        errors.join("\n")
+    ));
+    std::process::exit(1);
+}
+
+fn native_options(uninstall: bool, renderer: eframe::Renderer) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if uninstall { "Capyro - Uninstaller" } else { "Capyro - Installer" })
         .with_app_id("CapyroInstaller")
@@ -55,14 +101,11 @@ fn main() -> eframe::Result {
         .with_resizable(false)
         .with_maximize_button(false)
         .with_decorations(false)
-        .with_transparent(true);
+        // ventana transparente (esquinas redondeadas) solo en Linux: en
+        // Windows muchos drivers no la soportan y la ventana no aparece
+        .with_transparent(!cfg!(windows));
     if let Some(i) = icon() {
         viewport = viewport.with_icon(Arc::new(i));
     }
-    let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
-    eframe::run_native(
-        "Capyro - Installer",
-        options,
-        Box::new(move |cc| Ok(Box::new(ui::InstallerApp::new(cc, mode)))),
-    )
+    eframe::NativeOptions { viewport, centered: true, renderer, ..Default::default() }
 }

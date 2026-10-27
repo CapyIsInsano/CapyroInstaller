@@ -22,7 +22,8 @@ pub const BUTTON_GRAY: Color32 = Color32::from_rgb(0x3D, 0x3E, 0x44);
 /// La barra de progreso.
 pub const GREEN: Color32 = Color32::from_rgb(0x3D, 0xD6, 0x7A);
 
-pub const WINDOW_RADIUS: u8 = 14;
+/// En Windows la ventana no es transparente: esquinas rectas.
+pub const WINDOW_RADIUS: u8 = if cfg!(windows) { 0 } else { 14 };
 
 pub fn regular(size: f32) -> FontId {
     FontId::proportional(size)
