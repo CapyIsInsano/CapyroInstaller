@@ -46,7 +46,7 @@ No pide permisos de administrador: se instala solo para tu usuario.
 | **Capyro** (capyro.exe, las DLL de FFmpeg) | `%LOCALAPPDATA%\Programs\Capyro` |
 | **Configuración** (`Capyro.lua`) | `Documentos\Capyro\Config\Capyro.lua` |
 | **Accesos directos** | Escritorio y menú Inicio (se pueden destildar) |
-| **"Abrir con…"** | Capyro aparece para mp4, mov, avi, mp3, wav, ogg y aac (sin adueñarse de ninguno; para usarlo por defecto: Configuración → Aplicaciones predeterminadas → Capyro) |
+| **"Abrir con…"** | Capyro aparece para mp4, mov, avi, mkv, webm, mp3, wav, ogg, aac, flac, opus, m4a y aiff (.aif) (sin adueñarse de ninguno; para usarlo por defecto: Configuración → Aplicaciones predeterminadas → Capyro) |
 | **Desinstalar** | Configuración → Aplicaciones → Capyro (o `uninstall.exe --uninstall`) |
 
 - La configuración se crea con **`system = "Win"`**: así Capyro sabe que es la versión de
