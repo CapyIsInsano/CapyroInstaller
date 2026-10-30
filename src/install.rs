@@ -25,13 +25,19 @@ pub const ASSET: &str = "capyro-windows-x64.zip";
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Capyro";
 /// Formatos que abre Capyro ("Abrir con…").
 #[cfg_attr(not(windows), allow(dead_code))]
-pub const EXTENSIONS: [&str; 7] = [".mp4", ".mov", ".avi", ".mp3", ".wav", ".ogg", ".aac"];
+pub const EXTENSIONS: [&str; 15] = [
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", // video
+    ".mp3", ".wav", ".ogg", ".aac", ".flac", ".opus", ".m4a", ".aiff", ".aif", ".aifc", // audio
+];
 /// Tipo de archivo de Capyro en el registro (ProgID).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const PROG_ID: &str = "Capyro.Media";
 /// Dónde se anotan las capacidades (Aplicaciones predeterminadas).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const CAPABILITIES: &str = r"Software\Capyro\Capabilities";
+/// Lista "Abrir con…" que el Explorador lee por cada extensión (por usuario).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const FILE_EXTS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts";
 
 /// Archivo junto a capyro.exe con la ruta de la config (lo lee Capyro).
 pub const CONFIG_POINTER: &str = "capyro-config.txt";
@@ -509,6 +515,9 @@ mod system {
             assoc.set_value(ext, &PROG_ID)?;
             let (k, _) = hkcu.create_subkey(format!(r"Software\Classes\{ext}\OpenWithProgids"))?;
             k.set_value(PROG_ID, &"")?;
+            // y la del Explorador: sin esta, "Abrir con…" no muestra Capyro
+            let (fe, _) = hkcu.create_subkey(format!(r"{FILE_EXTS}\{ext}\OpenWithProgids"))?;
+            fe.set_value(PROG_ID, &"")?;
         }
         hkcu.create_subkey(r"Software\RegisteredApplications")?.0.set_value("Capyro", &CAPABILITIES)?;
         notify_assoc_changed();
@@ -519,6 +528,9 @@ mod system {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         for ext in EXTENSIONS {
             if let Ok(k) = hkcu.open_subkey_with_flags(format!(r"Software\Classes\{ext}\OpenWithProgids"), KEY_ALL_ACCESS) {
+                let _ = k.delete_value(PROG_ID);
+            }
+            if let Ok(k) = hkcu.open_subkey_with_flags(format!(r"{FILE_EXTS}\{ext}\OpenWithProgids"), KEY_ALL_ACCESS) {
                 let _ = k.delete_value(PROG_ID);
             }
         }
