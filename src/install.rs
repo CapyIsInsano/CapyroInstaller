@@ -35,6 +35,9 @@ pub const PROG_ID: &str = "Capyro.Media";
 /// Dónde se anotan las capacidades (Aplicaciones predeterminadas).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const CAPABILITIES: &str = r"Software\Capyro\Capabilities";
+/// Dónde Windows busca capyro.exe por su nombre (App Paths, por usuario).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const APP_PATHS: &str = r"Software\Microsoft\Windows\CurrentVersion\App Paths\capyro.exe";
 /// Lista "Abrir con…" que el Explorador lee por cada extensión (por usuario).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_EXTS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts";
@@ -503,6 +506,14 @@ mod system {
         hkcu.create_subkey(format!(r"{app}\shell\open\command"))?.0.set_value("", &open_cmd)?;
         let (types, _) = hkcu.create_subkey(format!(r"{app}\SupportedTypes"))?;
 
+        // App Paths: así Windows encuentra capyro.exe por su nombre. Sin esto,
+        // "Abrir con…" no puede lanzar Capyro y no lo lista.
+        let (ap, _) = hkcu.create_subkey(APP_PATHS)?;
+        ap.set_value("", &exe_s)?;
+        if let Some(dir) = exe.parent() {
+            ap.set_value("Path", &dir.to_string_lossy().into_owned())?;
+        }
+
         // capacidades: aparece en Aplicaciones predeterminadas
         let (cap, _) = hkcu.create_subkey(CAPABILITIES)?;
         cap.set_value("ApplicationName", &"Capyro")?;
@@ -537,6 +548,7 @@ mod system {
         let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{PROG_ID}"));
         let _ = hkcu.delete_subkey_all(r"Software\Classes\Applications\capyro.exe");
         let _ = hkcu.delete_subkey_all(r"Software\Capyro");
+        let _ = hkcu.delete_subkey_all(APP_PATHS);
         if let Ok(k) = hkcu.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_ALL_ACCESS) {
             let _ = k.delete_value("Capyro");
         }
