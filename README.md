@@ -136,7 +136,7 @@ CAPYRO_PAYLOAD=$PWD/payload/capyro-macos-x64.zip   cargo build --release --targe
 mkdir -p CapyroInstaller.app/Contents/{MacOS,Resources}
 lipo -create -output CapyroInstaller.app/Contents/MacOS/CapyroInstaller \
     target/{aarch64,x86_64}-apple-darwin/release/CapyroInstaller
-sed "s/VERSION/0.1.4/g" assets/macos/Info.plist > CapyroInstaller.app/Contents/Info.plist
+sed "s/VERSION/0.1.5/g" assets/macos/Info.plist > CapyroInstaller.app/Contents/Info.plist
 cp assets/macos/capyro.icns CapyroInstaller.app/Contents/Resources/
 codesign --force --sign - CapyroInstaller.app
 ```

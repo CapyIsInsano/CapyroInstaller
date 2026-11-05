@@ -16,6 +16,8 @@ use crate::sound;
 use crate::theme::*;
 
 const AVATAR_PNG: &[u8] = include_bytes!("../assets/arturo.png");
+/// La cajita con la flecha: va arriba a la izquierda mientras se instala.
+const INSTALLING_PNG: &[u8] = include_bytes!("../assets/installer_logo_256.png");
 const AUTHOR: &str = "Arturo";
 const GITHUB_USER: &str = "CapyIsInsano";
 const GITHUB_URL: &str = "https://github.com/CapyIsInsano";
@@ -48,6 +50,7 @@ pub struct InstallerApp {
     screen: Screen,
     plan: Plan,
     logo: Option<TextureHandle>,
+    installing_logo: Option<TextureHandle>,
     avatar: Option<TextureHandle>,
     rx: Option<Receiver<Msg>>,
     picking: Option<(Pick, Receiver<Option<PathBuf>>)>,
@@ -247,6 +250,7 @@ impl InstallerApp {
                 start_menu: true,
             },
             logo: texture(&cc.egui_ctx, "logo", crate::LOGO_PNG),
+            installing_logo: texture(&cc.egui_ctx, "installing-logo", INSTALLING_PNG),
             avatar: texture(&cc.egui_ctx, "avatar", AVATAR_PNG),
             rx: None,
             picking: None,
@@ -415,8 +419,20 @@ impl InstallerApp {
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        if let Some(logo) = &self.logo {
-            p.image(logo.id(), Rect::from_min_size(pos2(full.left() + 24.0, full.top() + 16.0), Vec2::splat(42.0)), uv(), Color32::WHITE);
+        // mientras instala, el logo de Capyro se funde en la cajita del
+        // instalador (y vuelve al terminar)
+        let mix = ease_out(ui.ctx().animate_bool_with_time(
+            Id::unique("inst-logo-mix"),
+            matches!(self.screen, Screen::Installing { .. }),
+            0.35,
+        ));
+        let spot = Rect::from_min_size(pos2(full.left() + 24.0, full.top() + 16.0), Vec2::splat(42.0));
+        for (tex, alpha) in [(&self.logo, 1.0 - mix), (&self.installing_logo, mix)] {
+            if let Some(tex) = tex.as_ref().filter(|_| alpha > 0.001) {
+                // el que entra crece un poquito, el que sale se achica
+                let r = Rect::from_center_size(spot.center(), spot.size() * (0.9 + 0.1 * alpha));
+                p.image(tex.id(), r, uv(), Color32::WHITE.gamma_multiply(alpha));
+            }
         }
         let title = if matches!(self.screen, Screen::UninstallConfirm { .. } | Screen::Uninstalled { .. }) {
             "Capyro - Uninstaller"
