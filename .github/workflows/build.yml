@@ -1,8 +1,12 @@
-# Compila CapyroInstaller.exe (desde Linux, con mingw-w64) con el último
-# Capyro para Windows adentro y lo publica en la release "latest".
+# Compila CapyroInstaller con el último Capyro adentro y lo publica en la
+# release "latest":
+#
+#   CapyroInstaller.exe        → Windows 10 y 11 (desde Linux, con mingw-w64)
+#   CapyroInstaller-macos.zip  → CapyroInstaller.app para la Mac (universal:
+#                                Apple Silicon e Intel, cada una con su Capyro)
 #
 # Corre al hacer push, a mano, y cuando el CI de Capyro avisa que hay un
-# paquete nuevo (repository_dispatch "capyro-windows").
+# paquete nuevo (repository_dispatch "capyro-windows" o "capyro-macos").
 name: Instalador
 
 on:
@@ -10,16 +14,21 @@ on:
     branches: [main]
   workflow_dispatch:
   repository_dispatch:
-    types: [capyro-windows]
+    types: [capyro-windows, capyro-macos]
 
 permissions:
   contents: write
 
+concurrency:
+  group: installer-release
+  cancel-in-progress: true
+
+env:
+  CAPYRO_REPO: CapyIsInsano/Capyro
+
 jobs:
-  build:
+  windows:
     runs-on: ubuntu-24.04
-    env:
-      CAPYRO_REPO: CapyIsInsano/Capyro
     steps:
       - uses: actions/checkout@v4
 
@@ -50,13 +59,103 @@ jobs:
           cargo build --release --target x86_64-pc-windows-gnu
           cp target/x86_64-pc-windows-gnu/release/CapyroInstaller.exe .
           ls -la CapyroInstaller.exe
+          VERSION=$(unzip -p payload/capyro-windows-x64.zip version.txt 2>/dev/null | head -1 || true)
+          echo "${VERSION}" > version-windows.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instalador-windows
+          path: |
+            CapyroInstaller.exe
+            version-windows.txt
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Pruebas
+        run: cargo test --release
+
+      - name: Bajar el último Capyro para la Mac (Apple Silicon e Intel)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for a in arm64 x64; do
+            gh release download macos --repo "$CAPYRO_REPO" --pattern "capyro-macos-$a.zip" --dir payload \
+              || echo "::warning::No hay capyro-macos-$a.zip publicado: el instalador va a bajarlo al instalar"
+          done
+          ls -la payload
+
+      - name: Compilar (cada arquitectura con su Capyro adentro)
+        run: |
+          [ -f payload/capyro-macos-arm64.zip ] && export CAPYRO_PAYLOAD="$PWD/payload/capyro-macos-arm64.zip"
+          cargo build --release --target aarch64-apple-darwin
+          unset CAPYRO_PAYLOAD
+          [ -f payload/capyro-macos-x64.zip ] && export CAPYRO_PAYLOAD="$PWD/payload/capyro-macos-x64.zip"
+          cargo build --release --target x86_64-apple-darwin
+          unset CAPYRO_PAYLOAD
+
+      - name: Armar CapyroInstaller.app (universal)
+        run: |
+          APP=dist/CapyroInstaller.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/CapyroInstaller" \
+            target/aarch64-apple-darwin/release/CapyroInstaller \
+            target/x86_64-apple-darwin/release/CapyroInstaller
+          lipo -archs "$APP/Contents/MacOS/CapyroInstaller"
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          sed "s/VERSION/$VERSION/g" assets/macos/Info.plist > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          cp assets/macos/capyro.icns "$APP/Contents/Resources/"
+          codesign --force --sign - "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          (cd dist && ditto -c -k --norsrc --noextattr --keepParent CapyroInstaller.app ../CapyroInstaller-macos.zip)
+          ls -la CapyroInstaller-macos.zip
+          CAPYRO=$(unzip -p payload/capyro-macos-arm64.zip Capyro.app/Contents/Resources/version.txt 2>/dev/null | head -1 || true)
+          echo "${CAPYRO}" > version-macos.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instalador-macos
+          path: |
+            CapyroInstaller-macos.zip
+            version-macos.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: listo
+          merge-multiple: true
 
       - name: Publicar
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(unzip -p payload/capyro-windows-x64.zip version.txt 2>/dev/null | head -1 || true)
-          printf 'Instalador de Capyro para Windows 10 y 11.\n\nTrae adentro Capyro %s.\n' "${VERSION:-(la última versión, la baja al instalar)}" > notes.md
+          ls -la listo
+          WIN=$(head -1 listo/version-windows.txt 2>/dev/null || true)
+          MAC=$(head -1 listo/version-macos.txt 2>/dev/null || true)
+          {
+            echo "Instalador de Capyro para Windows 10 y 11, y para macOS 11 o más nuevo."
+            echo
+            echo "- **CapyroInstaller.exe** (Windows): trae adentro Capyro ${WIN:-(la última versión, la baja al instalar)}."
+            echo "- **CapyroInstaller-macos.zip** (Mac, Apple Silicon e Intel): trae adentro Capyro ${MAC:-(la última versión, la baja al instalar)}."
+            echo
+            echo "En la Mac: descomprimilo y, la primera vez, clic derecho en CapyroInstaller → Abrir (en macOS 15 o más nuevo: Ajustes del Sistema → Privacidad y seguridad → Abrir igual)."
+          } > notes.md
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest CapyroInstaller.exe --target "$GITHUB_SHA" \
-            --title "CapyroInstaller${VERSION:+ · Capyro $VERSION}" --notes-file notes.md
+          gh release create latest listo/CapyroInstaller.exe listo/CapyroInstaller-macos.zip --target "$GITHUB_SHA" \
+            --title "CapyroInstaller${WIN:+ · Capyro $WIN}" --notes-file notes.md

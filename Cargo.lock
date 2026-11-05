@@ -250,12 +250,13 @@ dependencies = [
 
 [[package]]
 name = "capyro_installer"
-version = "1.2.1"
+version = "0.1.4"
 dependencies = [
  "dirs",
  "eframe",
  "image",
  "mslnk",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
  "winreg",
