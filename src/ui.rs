@@ -295,11 +295,17 @@ impl InstallerApp {
             if let Ok(res) = rx.try_recv() {
                 if let Some(dir) = res {
                     match what {
+                        Pick::InstallDir if cfg!(target_os = "macos") => {
+                            // Mac: "/Applications" → "/Applications/Capyro.app"
+                            let named = dir.extension().is_some_and(|e| e == "app");
+                            self.plan.install_dir = if named { dir } else { dir.join("Capyro.app") };
+                        }
                         Pick::InstallDir => {
                             // "D:\Apps" → "D:\Apps\Capyro" (salvo que ya se llame Capyro)
                             let named = dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("capyro"));
                             self.plan.install_dir = if named { dir } else { dir.join("Capyro") };
                         }
+                        Pick::ConfigDir if cfg!(target_os = "macos") => self.plan.config_path = dir.join("capyro.lua"),
                         Pick::ConfigDir => self.plan.config_path = dir.join("Capyro.lua"),
                     }
                 }
@@ -318,6 +324,7 @@ impl InstallerApp {
         };
         let title = match what {
             Pick::InstallDir => "¿Dónde instalo Capyro?",
+            Pick::ConfigDir if cfg!(target_os = "macos") => "¿Dónde guardo la configuración (capyro.lua)?",
             Pick::ConfigDir => "¿Dónde guardo la configuración (Capyro.lua)?",
         };
         let (tx, rx) = mpsc::channel();
@@ -517,8 +524,14 @@ impl InstallerApp {
         self.path_box(ui, p, Rect::from_min_max(pos2(x0, full.top() + 254.0), pos2(x1, full.top() + 296.0)), "DÓNDE VA LA CONFIGURACIÓN", &cfg, true, Pick::ConfigDir);
 
         // opciones
-        Self::toggle(ui, p, pos2(x0, full.top() + 314.0), "Acceso directo en el escritorio", &mut self.plan.desktop_shortcut);
-        Self::toggle(ui, p, pos2(x0, full.top() + 342.0), "Acceso en el menú Inicio", &mut self.plan.start_menu);
+        // Mac: sin escritorio ni menú Inicio (Capyro ya aparece en Launchpad):
+        // solo si va en el Dock
+        if cfg!(target_os = "macos") {
+            Self::toggle(ui, p, pos2(x0, full.top() + 314.0), "Agregar Capyro al Dock", &mut self.plan.desktop_shortcut);
+        } else {
+            Self::toggle(ui, p, pos2(x0, full.top() + 314.0), "Acceso directo en el escritorio", &mut self.plan.desktop_shortcut);
+            Self::toggle(ui, p, pos2(x0, full.top() + 342.0), "Acceso en el menú Inicio", &mut self.plan.start_menu);
+        }
 
         // Instalar: gris; con el mouse encima crece y se pone amarillo
         let c = pos2(full.center().x, full.top() + 412.0);
@@ -543,10 +556,11 @@ impl InstallerApp {
             let ctx = ui.ctx().clone();
             self.start_install(&ctx);
         }
-        let note = if self.embedded.is_some() {
-            "Se instala solo para tu usuario: no pide permisos de administrador."
-        } else {
-            "Se baja la última versión de GitHub. No pide permisos de administrador."
+        let note = match (self.embedded.is_some(), cfg!(target_os = "macos")) {
+            (true, false) => "Se instala solo para tu usuario: no pide permisos de administrador.",
+            (false, false) => "Se baja la última versión de GitHub. No pide permisos de administrador.",
+            (true, true) => "Va con las demás apps de la Mac. No pide tu contraseña.",
+            (false, true) => "Se baja la última versión de GitHub. No pide tu contraseña.",
         };
         p.text(pos2(full.center().x, full.top() + 462.0), Align2::CENTER_CENTER, note, regular(11.5), TEXT_FAINT);
         if ui.ctx().input(|i| i.key_pressed(Key::Enter)) && self.picking.is_none() {
@@ -566,7 +580,7 @@ impl InstallerApp {
         p.text(pos2(x0, full.top() + 104.0), Align2::LEFT_CENTER, "Instalando Capyro…", bold(26.0), TEXT);
         let ver = match &self.embedded {
             Some(v) => format!("Versión {v}"),
-            None => "La última versión para Windows".to_owned(),
+            None => format!("La última versión para {}", install::SYSTEM_NAME),
         };
         p.text(pos2(x0, full.top() + 134.0), Align2::LEFT_CENTER, ver, regular(13.0), TEXT_DIM);
 
@@ -659,7 +673,11 @@ impl InstallerApp {
             .ok()
             .and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "CapyroInstaller.exe".into());
-        let sub = format!("Capyro no necesita {me} para andar. Se desinstala desde Configuración → Aplicaciones.");
+        let sub = if cfg!(target_os = "macos") {
+            "Capyro no necesita CapyroInstaller para andar. Se desinstala desde Capyro (Información → Desinstalar Capyro) o arrastrándolo a la Papelera.".to_owned()
+        } else {
+            format!("Capyro no necesita {me} para andar. Se desinstala desde Configuración → Aplicaciones.")
+        };
         let g = pc.layout(sub, regular(11.5), TEXT_DIM, card.width() - 66.0);
         pc.galley(pos2(card.left() + 52.0, card.top() + 32.0), g, TEXT_DIM);
 

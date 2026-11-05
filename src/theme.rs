@@ -44,9 +44,16 @@ pub fn apply_visuals(ctx: &egui::Context) {
 }
 
 /// Linux: DejaVu Sans. Windows: Segoe UI (+ Segoe UI Symbol para ▸, ✓...).
+/// Mac: Arial (+ Apple Symbols), como Capyro.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let (regular, bold, symbols): (&[&str], &[&str], &[&str]) = (
+        &["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"],
+        &["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"],
+        &["/System/Library/Fonts/Apple Symbols.ttf"],
+    );
+    #[cfg(not(any(windows, target_os = "macos")))]
     let (regular, bold, symbols): (&[&str], &[&str], &[&str]) = (
         &[
             "/usr/share/fonts/dejavu/DejaVuSans.ttf",

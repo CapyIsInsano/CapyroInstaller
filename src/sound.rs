@@ -19,7 +19,8 @@ pub fn click() {
     }
 }
 
-/// Fuera de Windows (solo para probar la interfaz): paplay o aplay si están.
+/// Mac: afplay (viene con macOS). Linux (solo para probar la interfaz):
+/// paplay o aplay si están.
 #[cfg(not(windows))]
 pub fn click() {
     std::thread::spawn(|| {
@@ -27,7 +28,8 @@ pub fn click() {
         if !path.exists() && std::fs::write(&path, CLICK).is_err() {
             return;
         }
-        for player in ["paplay", "aplay"] {
+        let players: &[&str] = if cfg!(target_os = "macos") { &["/usr/bin/afplay"] } else { &["paplay", "aplay"] };
+        for player in players {
             let ok = std::process::Command::new(player)
                 .arg(&path)
                 .stdout(std::process::Stdio::null())

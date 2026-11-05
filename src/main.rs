@@ -1,14 +1,17 @@
 //! Capyro - Installer
 //!
-//! Instalador de Capyro para Windows, con la misma cara que Capyro: elegís
-//! dónde se instala y dónde va la configuración, tocás Instalar y listo.
-//! Con `--uninstall` (lo que corre "Aplicaciones instaladas") lo desinstala.
+//! Instalador de Capyro para Windows y la Mac, con la misma cara que Capyro:
+//! elegís dónde se instala y dónde va la configuración, tocás Instalar y
+//! listo. Con `--uninstall` (lo que corre "Aplicaciones instaladas" en
+//! Windows) lo desinstala.
 //!
-//! Fuera de Windows se compila igual, pero en "simulación": instala en una
-//! carpeta de prueba (sirve para trabajar en la interfaz).
+//! En Linux se compila igual, pero en "simulación": instala en una carpeta
+//! de prueba (sirve para trabajar en la interfaz).
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(any(target_os = "macos", test))]
+mod dock;
 mod errlog;
 mod install;
 mod sound;
@@ -60,7 +63,14 @@ fn main() -> eframe::Result {
     } else {
         vec![eframe::Renderer::Glow, eframe::Renderer::Wgpu]
     };
-    #[cfg(not(windows))]
+    // Mac: Metal y, si no anda, OpenGL. Linux: OpenGL.
+    #[cfg(target_os = "macos")]
+    let renderers: Vec<eframe::Renderer> = if args.iter().any(|a| a == "--opengl") {
+        vec![eframe::Renderer::Glow]
+    } else {
+        vec![eframe::Renderer::Wgpu, eframe::Renderer::Glow]
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
     let renderers = vec![eframe::Renderer::Glow];
     errlog::log(&format!(
         "CapyroInstaller {} · abriendo la ventana ({renderers:?})",

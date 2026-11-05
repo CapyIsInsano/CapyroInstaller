@@ -1,6 +1,7 @@
 //! La instalación en sí: corre en otro hilo y le cuenta a la interfaz por
 //! dónde va con [`Msg`].
 //!
+//! **Windows**
 //! 1. El paquete (`capyro-windows-x64.zip`): el que viene adentro del
 //!    instalador o, si no trae, el de la última versión para Windows
 //!    publicada en GitHub (Releases del repo de Capyro).
@@ -9,7 +10,18 @@
 //! 3. La config: si no existe, la de ejemplo con `system = "Win"`. Si ya
 //!    existe no se pisa (solo se corrige `system`). Su ruta queda anotada en
 //!    `capyro-config.txt`, al lado de capyro.exe.
-//! 4. Windows: accesos directos, "Aplicaciones instaladas" y uninstall.exe.
+//! 4. Accesos directos, "Aplicaciones instaladas" y uninstall.exe.
+//!
+//! **Mac**
+//! 1. El paquete (`capyro-macos-arm64.zip` o `capyro-macos-x64.zip`, según
+//!    la Mac): el de adentro o el de la release `macos` de GitHub.
+//! 2. El Capyro.app se descomprime al lado del lugar elegido (con los
+//!    permisos y la firma intactos) y después toma su lugar: si había uno,
+//!    nunca queda a medias.
+//! 3. La config, igual que en Windows pero con `system = "Mac"`; su ruta va
+//!    en `~/Library/Application Support/Capyro/capyro-config.txt` (el .app
+//!    no se toca: está firmado).
+//! 4. Se anota en el Finder ("Abrir con…") y, si se pidió, en el Dock.
 
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -17,9 +29,22 @@ use std::sync::mpsc::Sender;
 
 /// Repo de Capyro (de dónde se baja si el instalador no trae el paquete).
 pub const REPO: &str = "CapyIsInsano/Capyro";
-/// La release que publica el CI del repo con la versión para Windows.
-pub const WINDOWS_TAG: &str = "windows";
-pub const ASSET: &str = "capyro-windows-x64.zip";
+/// La release que publica el CI del repo con la versión para este sistema
+/// (en Linux, la simulación usa la de Windows).
+pub const RELEASE_TAG: &str = if cfg!(target_os = "macos") { "macos" } else { "windows" };
+pub const ASSET: &str = if cfg!(target_os = "macos") {
+    if cfg!(target_arch = "aarch64") {
+        "capyro-macos-arm64.zip"
+    } else {
+        "capyro-macos-x64.zip"
+    }
+} else {
+    "capyro-windows-x64.zip"
+};
+/// `options.system` de la config que se instala.
+pub const SYSTEM_CODE: &str = if cfg!(target_os = "macos") { "Mac" } else { "Win" };
+/// Para los textos: "Windows" o "la Mac".
+pub const SYSTEM_NAME: &str = if cfg!(target_os = "macos") { "la Mac" } else { "Windows" };
 /// Clave de "Aplicaciones instaladas" (por usuario: no pide administrador).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Capyro";
@@ -67,17 +92,31 @@ pub enum Msg {
     Failed(String),
 }
 
-/// true = esto no es Windows: se instala en una carpeta de prueba y no se
-/// tocan accesos directos ni el registro (para probar la interfaz).
-pub const SIMULATION: bool = !cfg!(windows);
+/// true = esto no es Windows ni la Mac: se instala en una carpeta de prueba y
+/// no se tocan accesos directos ni el registro (para probar la interfaz).
+pub const SIMULATION: bool = !cfg!(any(windows, target_os = "macos"));
 
-/// Raíz de la "simulación" fuera de Windows.
-#[cfg(not(windows))]
+/// Raíz de la "simulación" (Linux).
+#[cfg(not(any(windows, target_os = "macos")))]
 fn sim_root() -> PathBuf {
     std::env::temp_dir().join("capyro-installer-prueba")
 }
 
+/// La carpeta personal (Mac).
+#[cfg(target_os = "macos")]
+fn home() -> PathBuf {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// Mac: `~/Library/Application Support/Capyro` (config, listas, sesión).
+#[cfg(target_os = "macos")]
+pub fn app_support() -> PathBuf {
+    home().join("Library/Application Support/Capyro")
+}
+
 /// `%LOCALAPPDATA%\Programs\Capyro` (donde instalan las apps por usuario).
+/// Mac: `/Applications/Capyro.app` (o `~/Applications` si no se puede
+/// escribir en la de todos: un usuario que no es administrador).
 pub fn default_install_dir() -> PathBuf {
     #[cfg(windows)]
     {
@@ -86,28 +125,53 @@ pub fn default_install_dir() -> PathBuf {
             .join("Programs")
             .join("Capyro")
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let all = Path::new("/Applications");
+        let probe = all.join(format!(".capyro-installer-{}", std::process::id()));
+        let writable = std::fs::write(&probe, b"ok").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        if writable {
+            all.join("Capyro.app")
+        } else {
+            home().join("Applications").join("Capyro.app")
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         sim_root().join("AppData/Local/Programs/Capyro")
     }
 }
 
-/// `Documentos\Capyro\Config\Capyro.lua`
+/// `Documentos\Capyro\Config\Capyro.lua`; en la Mac,
+/// `~/Library/Application Support/Capyro/capyro.lua` (como las demás apps, y
+/// sin el cartel de permiso que macOS pide para Documentos).
 pub fn default_config_path() -> PathBuf {
-    #[cfg(windows)]
-    let docs = dirs::document_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join("Documents")))
-        .unwrap_or_else(|| PathBuf::from(r"C:\Capyro"));
-    #[cfg(not(windows))]
-    let docs = sim_root().join("Documents");
-    docs.join("Capyro").join("Config").join("Capyro.lua")
+    #[cfg(target_os = "macos")]
+    {
+        app_support().join("capyro.lua")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(windows)]
+        let docs = dirs::document_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join("Documents")))
+            .unwrap_or_else(|| PathBuf::from(r"C:\Capyro"));
+        #[cfg(not(windows))]
+        let docs = sim_root().join("Documents");
+        docs.join("Capyro").join("Config").join("Capyro.lua")
+    }
 }
 
 /// La versión que trae el paquete de adentro (version.txt), si trae.
 pub fn embedded_version() -> Option<String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(PAYLOAD?)).ok()?;
-    let root = root_prefix(&mut zip);
-    let mut f = zip.by_name(&format!("{root}version.txt")).ok()?;
+    let name = if cfg!(target_os = "macos") {
+        format!("{APP_ROOT}Contents/Resources/version.txt")
+    } else {
+        format!("{}version.txt", root_prefix(&mut zip))
+    };
+    let mut f = zip.by_name(&name).ok()?;
     let mut s = String::new();
     f.read_to_string(&mut s).ok()?;
     let v = s.lines().next()?.trim().to_owned();
@@ -126,23 +190,89 @@ pub fn run(plan: &Plan, tx: &Sender<Msg>, wake: &dyn Fn()) {
     }
 }
 
+/// El paquete (sus bytes), la versión de la release si se bajó, y dónde
+/// empieza la barra de progreso (bajar ocupa la primera parte).
+type Package = (std::borrow::Cow<'static, [u8]>, Option<String>, f32);
+
+/// El paquete: el de adentro, o el de GitHub.
+fn package(send: &dyn Fn(Msg)) -> Result<Package, String> {
+    match PAYLOAD {
+        Some(p) => Ok((std::borrow::Cow::Borrowed(p), None, 0.0)),
+        None => {
+            let (data, version) = download_latest(send)?;
+            Ok((std::borrow::Cow::Owned(data), version, 0.55))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install(plan: &Plan, send: &dyn Fn(Msg)) -> Result<(String, PathBuf), String> {
+    send(Msg::Step("Preparando…".into()));
+    send(Msg::Progress(0.0));
+    let (bytes, release_version, span_start) = package(send)?;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&*bytes)).map_err(|e| format!("El paquete está dañado: {e}"))?;
+    if zip.by_name(&format!("{APP_ROOT}Contents/MacOS/Capyro")).is_err() {
+        return Err("El paquete no trae Capyro.app".into());
+    }
+
+    // 1. el Capyro.app nuevo, al lado de donde va
+    let app = &plan.install_dir;
+    let parent = app.parent().ok_or("Elegí una carpeta para Capyro.app")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("No pude crear {}: {e}", parent.display()))?;
+    let staged = parent.join(".Capyro-instalando.app");
+    let _ = std::fs::remove_dir_all(&staged);
+    extract_app(&mut zip, &staged, send, (span_start, 0.88)).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&staged);
+        if e.contains("ermission") || e.contains("ermiso") {
+            format!("No tengo permiso para escribir en {}. Probá en tu carpeta de Aplicaciones (~/Applications)", parent.display())
+        } else {
+            e
+        }
+    })?;
+    let resources = staged.join("Contents/Resources");
+    let version = std::fs::read_to_string(resources.join("version.txt"))
+        .ok()
+        .and_then(|t| t.lines().next().map(|l| l.trim().to_owned()))
+        .filter(|v| !v.is_empty())
+        .or(release_version)
+        .unwrap_or_else(|| "(sin versión)".into());
+    let default_config = std::fs::read_to_string(resources.join("config").join("capyro.lua")).ok();
+
+    // 2. toma el lugar del que había (Capyro abierto no molesta: sigue andando)
+    send(Msg::Step("Copiando Capyro.app…".into()));
+    swap_app(&staged, app).map_err(|e| format!("No pude poner Capyro.app en {}: {e}", parent.display()))?;
+    send(Msg::Progress(0.92));
+
+    // 3. la config
+    send(Msg::Step("Guardando la configuración…".into()));
+    write_config(&plan.config_path, default_config.as_deref())
+        .map_err(|e| format!("No pude guardar la configuración en {}: {e}", plan.config_path.display()))?;
+    let pointer = format!(
+        "# Dónde está la configuración de Capyro (la eligió el instalador).\n# Para usar otra, cambiá la ruta de abajo.\n{}\n",
+        plan.config_path.display()
+    );
+    let support = app_support();
+    std::fs::create_dir_all(&support)
+        .and_then(|_| std::fs::write(support.join(CONFIG_POINTER), pointer))
+        .map_err(|e| format!("No pude escribir {CONFIG_POINTER}: {e}"))?;
+    send(Msg::Progress(0.95));
+
+    // 4. el Finder ("Abrir con…") y el Dock
+    send(Msg::Step(if plan.desktop_shortcut { "Agregando Capyro al Dock…" } else { "Avisándole al Finder…" }.into()));
+    system::integrate(plan, app, &version)?;
+    send(Msg::Progress(1.0));
+    send(Msg::Step("Listo".into()));
+    Ok((version, app.clone()))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn install(plan: &Plan, send: &dyn Fn(Msg)) -> Result<(String, PathBuf), String> {
     send(Msg::Step("Preparando…".into()));
     send(Msg::Progress(0.0));
 
     // 1. el paquete
-    let (span_start, mut release_version) = (if PAYLOAD.is_some() { 0.0 } else { 0.55 }, None);
-    let downloaded;
-    let bytes: &[u8] = match PAYLOAD {
-        Some(p) => p,
-        None => {
-            let (data, version) = download_latest(send)?;
-            downloaded = data;
-            release_version = version;
-            &downloaded
-        }
-    };
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("El paquete está dañado: {e}"))?;
+    let (bytes, release_version, span_start) = package(send)?;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&*bytes)).map_err(|e| format!("El paquete está dañado: {e}"))?;
     let root = root_prefix(&mut zip);
     if zip.by_name(&format!("{root}capyro.exe")).is_err() {
         return Err("El paquete no trae capyro.exe".into());
@@ -227,6 +357,7 @@ fn root_prefix<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> String {
 
 /// Escribe `data` en `target`. Si ya existe se renombra a `.old` antes
 /// (un .exe o una .dll en uso no se pueden pisar, pero sí renombrar).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn write_replacing(target: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
@@ -246,8 +377,91 @@ fn write_replacing(target: &Path, data: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
+/// Adentro del paquete de la Mac, todo va en esta carpeta.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub const APP_ROOT: &str = "Capyro.app/";
+
+/// Saca `Capyro.app/…` del zip a `dest` (que queda como el .app), con los
+/// permisos de cada archivo (el ejecutable y las librerías tienen que poder
+/// ejecutarse) y los enlaces simbólicos. Los metadatos del Finder
+/// (`__MACOSX/`, `._algo`) no.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn extract_app<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    dest: &Path,
+    send: &dyn Fn(Msg),
+    span: (f32, f32),
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let total: u64 = (0..zip.len()).filter_map(|i| zip.by_index(i).ok().map(|f| f.size())).sum::<u64>().max(1);
+    let mut done = 0u64;
+    std::fs::create_dir_all(dest).map_err(|e| format!("No pude crear {}: {e}", dest.display()))?;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).map_err(|e| format!("El paquete está dañado: {e}"))?;
+        let Some(name) = f.enclosed_name() else { continue };
+        let Ok(rel) = name.strip_prefix(APP_ROOT.trim_end_matches('/')) else { continue };
+        if rel.as_os_str().is_empty() || rel.components().any(|c| c.as_os_str().to_string_lossy().starts_with("._")) {
+            continue;
+        }
+        let target = dest.join(rel);
+        if f.is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| format!("No pude crear {}: {e}", target.display()))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("No pude crear {}: {e}", parent.display()))?;
+        }
+        let shown = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        send(Msg::Step(format!("Copiando {shown}")));
+        let mut data = Vec::with_capacity(f.size() as usize);
+        f.read_to_end(&mut data).map_err(|e| format!("No pude leer {shown} del paquete: {e}"))?;
+        if f.is_symlink() {
+            let to = String::from_utf8_lossy(&data).into_owned();
+            std::os::unix::fs::symlink(&to, &target).map_err(|e| format!("No pude crear el enlace {shown}: {e}"))?;
+        } else {
+            std::fs::write(&target, &data).map_err(|e| format!("No pude copiar {shown}: {e}"))?;
+            let mode = f.unix_mode().map(|m| m & 0o7777).filter(|m| *m != 0).unwrap_or(0o644);
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| format!("No pude darle permisos a {shown}: {e}"))?;
+        }
+        done += f.size();
+        send(Msg::Progress(span.0 + (span.1 - span.0) * (done as f32 / total as f32)));
+    }
+    Ok(())
+}
+
+/// Pone el .app recién sacado (`staged`) en el lugar de `app`: el que había
+/// pasa a `.Capyro-viejo.app` (y se borra), así nunca queda uno a medias.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn swap_app(staged: &Path, app: &Path) -> std::io::Result<()> {
+    let parent = app.parent().ok_or_else(|| std::io::Error::other("sin carpeta"))?;
+    let old = parent.join(".Capyro-viejo.app");
+    let _ = std::fs::remove_dir_all(&old);
+    let had = app.exists();
+    if had {
+        std::fs::rename(app, &old)?;
+    }
+    if let Err(e) = std::fs::rename(staged, app) {
+        if had {
+            let _ = std::fs::rename(&old, app);
+        }
+        return Err(e);
+    }
+    if had {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    Ok(())
+}
+
 /// `options.system` en "Win" (la línea `system = "..."` de capyro.lua).
+#[cfg(test)]
 pub fn set_system_win(lua: &str) -> String {
+    set_system(lua, "Win")
+}
+
+/// `options.system` en `code` ("Win" o "Mac"; la línea `system = "..."` de
+/// capyro.lua).
+pub fn set_system(lua: &str, code: &str) -> String {
     let mut out = String::with_capacity(lua.len() + 32);
     let mut found = false;
     for line in lua.split_inclusive('\n') {
@@ -263,7 +477,7 @@ pub fn set_system_win(lua: &str) -> String {
                 .and_then(|v| v.find('"').map(|i| &v[i + 1..]))
                 .unwrap_or(",\n");
             let pad = &t["system".len()..t.find('=').unwrap()];
-            out.push_str(&format!("{indent}system{pad}= \"Win\"{rest}"));
+            out.push_str(&format!("{indent}system{pad}= \"{code}\"{rest}"));
             if !rest.ends_with('\n') && line.ends_with('\n') {
                 out.push('\n');
             }
@@ -282,14 +496,15 @@ fn write_config(path: &Path, default: Option<&str>) -> std::io::Result<()> {
     if path.exists() {
         // ya había una: no se pisa (son los atajos y opciones del usuario)
         let old = std::fs::read_to_string(path)?;
-        let fixed = set_system_win(&old);
+        let fixed = set_system(&old, SYSTEM_CODE);
         if fixed != old {
             std::fs::write(path, fixed)?;
         }
         return Ok(());
     }
-    let base = default.unwrap_or("-- Configuración de Capyro\nreturn { options = { system = \"Win\" } }\n");
-    let text = format!("-- Instalado por CapyroInstaller.\n{}", set_system_win(base));
+    let fallback = format!("-- Configuración de Capyro\nreturn {{ options = {{ system = \"{SYSTEM_CODE}\" }} }}\n");
+    let base = default.unwrap_or(&fallback);
+    let text = format!("-- Instalado por CapyroInstaller.\n{}", set_system(base, SYSTEM_CODE));
     std::fs::write(path, text)
 }
 
@@ -329,7 +544,7 @@ fn command(program: &Path) -> std::process::Command {
 
 fn download_latest(send: &dyn Fn(Msg)) -> Result<(Vec<u8>, Option<String>), String> {
     send(Msg::Step("Buscando la última versión…".into()));
-    let url = format!("https://api.github.com/repos/{}/releases/tags/{WINDOWS_TAG}", repo());
+    let url = format!("https://api.github.com/repos/{}/releases/tags/{RELEASE_TAG}", repo());
     let out = command(&curl())
         .args(["-sS", "-L", "--fail", "--connect-timeout", "15", "--max-time", "60"])
         .args(["-H", "Accept: application/vnd.github+json", "-A", "CapyroInstaller"])
@@ -339,7 +554,7 @@ fn download_latest(send: &dyn Fn(Msg)) -> Result<(Vec<u8>, Option<String>), Stri
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(if err.contains("404") {
-            "Todavía no hay una versión de Capyro para Windows publicada".into()
+            format!("Todavía no hay una versión de Capyro para {SYSTEM_NAME} publicada")
         } else if matches!(out.status.code(), Some(5 | 6 | 7 | 28 | 35)) {
             "Sin conexión: no pude llegar a GitHub".into()
         } else {
@@ -351,7 +566,7 @@ fn download_latest(send: &dyn Fn(Msg)) -> Result<(Vec<u8>, Option<String>), Stri
     let asset = v["assets"]
         .as_array()
         .and_then(|a| a.iter().find(|x| x["name"] == ASSET))
-        .ok_or("La versión publicada no trae el paquete para Windows")?;
+        .ok_or_else(|| format!("La versión publicada no trae el paquete para {SYSTEM_NAME} ({ASSET})"))?;
     let dl = asset["browser_download_url"].as_str().ok_or("El paquete no tiene URL")?.to_owned();
     let size = asset["size"].as_u64().unwrap_or(0);
     let version = v["body"].as_str().and_then(|b| {
@@ -616,8 +831,115 @@ mod system {
     }
 }
 
-/// Fuera de Windows: nada de registro ni accesos directos (simulación).
-#[cfg(not(windows))]
+/* ------------------------------------------------------------------------ */
+/* lo que es de la Mac                                                      */
+/* ------------------------------------------------------------------------ */
+
+#[cfg(target_os = "macos")]
+mod system {
+    use super::*;
+
+    const LSREGISTER: &str =
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+
+    pub fn integrate(plan: &Plan, app: &Path, _version: &str) -> Result<(), String> {
+        // sin la marca de "bajado de internet" (lo escribió un instalador que sí la tenía)
+        let _ = command(Path::new("/usr/bin/xattr")).args(["-dr", "com.apple.quarantine"]).arg(app).status();
+        // que el Finder lo anote ya ("Abrir con…") sin tener que abrirlo antes
+        let _ = command(Path::new(LSREGISTER)).arg("-f").arg(app).status();
+        if plan.desktop_shortcut {
+            add_to_dock(app);
+        }
+        Ok(())
+    }
+
+    /// Lo agrega a las apps fijas del Dock (si no está ya) y reinicia el Dock.
+    fn add_to_dock(app: &Path) {
+        let path = app.to_string_lossy().trim_end_matches('/').to_owned();
+        let current = command(Path::new("/usr/bin/defaults"))
+            .args(["read", "com.apple.dock", "persistent-apps"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if current.contains(&format!("{}/", crate::dock::url_path(&path))) || current.contains(&path) {
+            return;
+        }
+        let tile = format!(
+            "<dict><key>tile-data</key><dict><key>file-data</key><dict>\
+             <key>_CFURLString</key><string>{}</string><key>_CFURLStringType</key><integer>0</integer>\
+             </dict></dict></dict>",
+            xml_escape(&path)
+        );
+        let ok = command(Path::new("/usr/bin/defaults"))
+            .args(["write", "com.apple.dock", "persistent-apps", "-array-add", &tile])
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            let _ = command(Path::new("/usr/bin/killall")).arg("Dock").status();
+        }
+    }
+
+    fn xml_escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    /// Lo saca del Dock (si lo había puesto) y reinicia el Dock.
+    pub fn remove_from_dock(app: &Path) {
+        let Ok(out) = command(Path::new("/usr/bin/defaults")).args(["export", "com.apple.dock", "-"]).output() else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let xml = String::from_utf8_lossy(&out.stdout);
+        let Some(fixed) = crate::dock::dock_without(&xml, &app.to_string_lossy()) else { return };
+        let Ok(mut child) = command(Path::new("/usr/bin/defaults"))
+            .args(["import", "com.apple.dock", "-"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(fixed.as_bytes());
+        }
+        if child.wait().is_ok_and(|s| s.success()) {
+            let _ = command(Path::new("/usr/bin/killall")).arg("Dock").status();
+        }
+    }
+
+    /// El Capyro.app instalado (en Aplicaciones, la de todos o la tuya) y su config.
+    pub fn installed() -> Option<(PathBuf, Option<PathBuf>)> {
+        let app = [PathBuf::from("/Applications/Capyro.app"), home().join("Applications/Capyro.app")]
+            .into_iter()
+            .find(|a| a.join("Contents/MacOS/Capyro").is_file())?;
+        let config = std::fs::read_to_string(app_support().join(CONFIG_POINTER))
+            .ok()
+            .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).map(PathBuf::from))
+            .or_else(|| Some(default_config_path()));
+        Some((app, config))
+    }
+
+    /// En la Mac no hace falta (el .app ya se fue a la Papelera).
+    pub fn delete_dir_later(_dir: &Path) {}
+
+    /// Lo abre como si se tocara en el Finder.
+    pub fn launch(app: &Path) -> std::io::Result<()> {
+        command(Path::new("/usr/bin/open")).arg(app).spawn().map(|_| ())
+    }
+
+    /// A la Papelera, como arrastrarlo con el Finder.
+    pub fn move_to_trash(path: &Path) -> Result<(), String> {
+        use objc2_foundation::{NSFileManager, NSString, NSURL};
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+        NSFileManager::defaultManager()
+            .trashItemAtURL_resultingItemURL_error(&url, None)
+            .map_err(|e| e.localizedDescription().to_string())
+    }
+}
+
+/// Linux: nada de registro ni accesos directos (simulación).
+#[cfg(not(any(windows, target_os = "macos")))]
 mod system {
     use super::*;
 
@@ -659,9 +981,22 @@ pub fn delete_dir_later(dir: &Path) {
     system::delete_dir_later(dir);
 }
 
+/// Mac: Capyro.app a la Papelera y fuera del Dock. La config del usuario
+/// (en Application Support) queda.
+#[cfg(target_os = "macos")]
+pub fn uninstall(app: &Path) -> Result<(), String> {
+    if !app.join("Contents/MacOS/Capyro").exists() {
+        return Err(format!("No encontré Capyro en {}", app.display()));
+    }
+    system::move_to_trash(app).map_err(|e| format!("No pude moverlo a la Papelera: {e}"))?;
+    system::remove_from_dock(app);
+    Ok(())
+}
+
 /// Saca Capyro: accesos directos, registro y lo que hay en la carpeta (la
 /// carpeta en sí, con uninstall.exe adentro, se borra al cerrar: ver
 /// [`delete_dir_later`]). La config del usuario (en Documentos) queda.
+#[cfg(not(target_os = "macos"))]
 pub fn uninstall(dir: &Path) -> Result<(), String> {
     if !dir.join("capyro.exe").exists() {
         return Err(format!("No encontré Capyro en {}", dir.display()));
@@ -704,6 +1039,59 @@ mod tests {
         // la de Capyro de verdad
         let real = "    system        = \"Lin\",\n";
         assert_eq!(set_system_win(real), "    system        = \"Win\",\n");
+    }
+
+    #[test]
+    fn system_queda_en_mac() {
+        let real = "    system        = \"Lin\",\n";
+        assert_eq!(set_system(real, "Mac"), "    system        = \"Mac\",\n");
+        assert_eq!(set_system(&set_system(real, "Mac"), "Win"), "    system        = \"Win\",\n");
+    }
+
+    /// El paquete de la Mac: el Capyro.app con su ejecutable (que tiene que
+    /// quedar ejecutable), un enlace, y lo del Finder que no va.
+    #[cfg(unix)]
+    #[test]
+    fn instalar_el_app_de_la_mac() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let exe = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            let plain = zip::write::SimpleFileOptions::default().unix_permissions(0o644);
+            w.add_directory("Capyro.app/", plain).unwrap();
+            w.start_file("Capyro.app/Contents/MacOS/Capyro", exe).unwrap();
+            w.write_all(b"binario").unwrap();
+            w.start_file("Capyro.app/Contents/Frameworks/libavcodec.62.dylib", exe).unwrap();
+            w.write_all(b"lib").unwrap();
+            w.start_file("Capyro.app/Contents/Resources/version.txt", plain).unwrap();
+            w.write_all(b"0.4.0-alpha\n").unwrap();
+            w.add_symlink("Capyro.app/Contents/Resources/enlace", "version.txt", plain).unwrap();
+            w.start_file("__MACOSX/Capyro.app/._Contents", plain).unwrap();
+            w.write_all(b"basura").unwrap();
+            w.start_file("Capyro.app/Contents/._Info.plist", plain).unwrap();
+            w.write_all(b"basura").unwrap();
+            w.finish().unwrap();
+        }
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(buf.get_ref().as_slice())).unwrap();
+        let base = std::env::temp_dir().join(format!("capyro-inst-mac-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let staged = base.join(".Capyro-instalando.app");
+        extract_app(&mut z, &staged, &|_| {}, (0.0, 1.0)).unwrap();
+        let exe = staged.join("Contents/MacOS/Capyro");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"binario");
+        assert_eq!(std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::read_link(staged.join("Contents/Resources/enlace")).unwrap(), Path::new("version.txt"));
+        assert!(!staged.join("Contents/._Info.plist").exists());
+        assert!(!base.join("__MACOSX").exists());
+        // toma el lugar del que había
+        let app = base.join("Capyro.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(app.join("Contents/viejo"), "v").unwrap();
+        swap_app(&staged, &app).unwrap();
+        assert!(app.join("Contents/MacOS/Capyro").is_file() && !app.join("Contents/viejo").exists());
+        assert!(!staged.exists() && !base.join(".Capyro-viejo.app").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

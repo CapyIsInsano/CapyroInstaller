@@ -1,5 +1,6 @@
 //! Si algo sale mal antes de que haya ventana (o se cae), que se vea: en
-//! Windows un cartel y un log en %TEMP%\\CapyroInstaller.log.
+//! Windows y en la Mac un cartel, y un log en la carpeta temporal
+//! (`%TEMP%\\CapyroInstaller.log`).
 
 use std::io::Write;
 
@@ -30,6 +31,15 @@ pub fn fatal(msg: &str) {
         unsafe {
             MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10); // MB_ICONERROR
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Capyro - Installer")
+            .set_description(format!("{msg}\n\nDetalle en {}", log_path().display()))
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
     }
 }
 
