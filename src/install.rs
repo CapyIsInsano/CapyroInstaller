@@ -1119,13 +1119,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let cfg = base.join("Docs/Capyro/Config/Capyro.lua");
         write_config(&cfg, Some("local options = {\n    system        = \"auto\",\n}\n")).unwrap();
+        // "Win" en Windows (y en Linux, la simulación), "Mac" en la Mac
         let text = std::fs::read_to_string(&cfg).unwrap();
-        assert!(text.contains("system        = \"Win\""), "{text}");
+        assert!(text.contains(&format!("system        = \"{SYSTEM_CODE}\"")), "{text}");
         // si ya existe no se pisa
         std::fs::write(&cfg, "-- mía\nlocal options = {\n    system = \"Lin\",\n}\n").unwrap();
         write_config(&cfg, Some("otra")).unwrap();
         let text = std::fs::read_to_string(&cfg).unwrap();
-        assert!(text.starts_with("-- mía") && text.contains("system = \"Win\""), "{text}");
+        assert!(text.starts_with("-- mía") && text.contains(&format!("system = \"{SYSTEM_CODE}\"")), "{text}");
 
         let f = base.join("app/capyro.exe");
         write_replacing(&f, b"uno").unwrap();
